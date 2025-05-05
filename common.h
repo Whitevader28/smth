@@ -10,12 +10,14 @@
 #define MAX_MSG_SIZE 2031
 
 #define MAX_CONTENT_SIZE 1500
+#define MAX_UDP_MSG_SIZE 1600
 
 int recv_all(int sockfd, void *buffer, size_t len);
 int send_all(int sockfd, void *buffer, size_t len);
 void disable_nagle(int socket_fd);
-
-
+bool set_nonblocking(int sockfd);
+int recv_nonblocking(int sockfd, void *buffer, size_t max_len);
+int send_nonblocking(int sockfd, const void *buffer, size_t len);
 
 enum MessageType {
   MSG_ID = 0,
@@ -24,7 +26,8 @@ enum MessageType {
   MSG_UNSUBSCRIBE,
   MSG_EXIT,
   MSG_ERROR,
-  MSG_UNKNOWN
+  MSG_UNKNOWN,
+  MSG_UDP_FORWARD
 };
 
 union MessagePayload {
@@ -35,7 +38,7 @@ union MessagePayload {
 
 class ChatPacket {
  public:
-  uint16_t len; // Length of the payload
+  uint16_t len;  // Length of the payload
   MessageType type;
   MessagePayload payload;
 
