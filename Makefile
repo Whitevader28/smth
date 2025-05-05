@@ -7,7 +7,7 @@
 CXX = g++
 
 # C++ Flags
-CXXFLAGS = -Wall -g -Werror -Wno-error=unused-variable -std=c++11
+CXXFLAGS = -Wall -g -Werror -Wno-error=unused-variable -std=c++17
 
 # Portul pe care asculta serverul
 PORT = 12345
@@ -31,7 +31,7 @@ server: server.cpp common.o server_tcp_com.o
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lm
 
 # Compileaza subscriber.cpp
-subscriber: subscriber.cpp common.o
+subscriber: subscriber.cpp common.o server_tcp_com.o
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lm
 
 .PHONY: clean run_server run_subscriber

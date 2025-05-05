@@ -16,12 +16,29 @@ int send_all(int sockfd, void *buffer, size_t len);
 void disable_nagle(int socket_fd);
 
 
+
+enum MessageType {
+  MSG_ID = 0,
+  MSG_TEXT,
+  MSG_SUBSCRIBE,
+  MSG_UNSUBSCRIBE,
+  MSG_EXIT,
+  MSG_ERROR,
+  MSG_UNKNOWN
+};
+
+union MessagePayload {
+  char text[MAX_MSG_SIZE + 1];
+  char id[MAX_CLIENT_ID_SIZE];
+  // Add more fields as needed for other message types
+};
+
 class ChatPacket {
  public:
-  uint16_t len;
-  char message[MAX_MSG_SIZE + 1];
+  uint16_t len; // Length of the payload
+  MessageType type;
+  MessagePayload payload;
 
-  void print_messge();
   void print_message();
 };
 

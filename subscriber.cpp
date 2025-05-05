@@ -11,6 +11,7 @@
 #include <unordered_map>
 
 #include "common.h"
+#include "server_tcp_com.h"
 #include "helpers.h"
 
 using namespace std;
@@ -35,41 +36,35 @@ void run_client(int socket_fd) {
     DIE(rc < 0, "poll");
     if (poll_fds[0].revents & POLLIN) {
       // Am primit date de la server
-      rc = recv_all(socket_fd, &recv_packet, sizeof(recv_packet));
+      int rc = receive_from_client(socket_fd, recv_packet);
       if (rc <= 0) break;
 
-      if (strcmp(recv_packet.message, "exit") == 0) {
-        // cerr << "Server closed connection\n";
+      if (recv_packet.type == MSG_EXIT) {
         break;
       }
-
-      if (strcmp(recv_packet.message, "EINUSE") == 0) {
-        // cerr << "Client already connected\n";
+      if (recv_packet.type == MSG_ERROR && strcmp(recv_packet.payload.text, "EINUSE") == 0) {
         break;
       }
-
-      printf("%s\n", recv_packet.message);
+      printf("%s\n", recv_packet.payload.text);
     }
     if (poll_fds[1].revents & POLLIN) {
       // Am primit date de la tastatura
-      // TODO: daca sa elimin sau nu new lines?
       rc = read(STDIN_FILENO, buf, MAX_MSG_SIZE);
       DIE(rc < 0, "read");
       buf[rc - 1] = 0;
 
-      // Close the client if the command is "exit"
       if (strcmp(buf, "exit") == 0) {
         ChatPacket exit_packet;
         exit_packet.len = strlen("exit") + 1;
-        strcpy(exit_packet.message, "exit");
-        send_all(socket_fd, &exit_packet, sizeof(exit_packet));
+        exit_packet.type = MSG_EXIT;
+        strcpy(exit_packet.payload.text, "exit");
+        send_to_client(socket_fd, exit_packet);
         break;
       }
 
       string input(buf);
       std::size_t end = input.find(' ');
       if (end == std::string::npos) {
-        // cerr << "Command not allowed\n";
         continue;
       }
 
@@ -77,36 +72,31 @@ void run_client(int socket_fd) {
       string second = input.substr(end + 1);
 
       if (second.length() > MAX_MSG_SIZE) {
-        // cerr << "Topic too long\n";
         continue;
       }
-
       if (second.length() == 0) {
-        // cerr << "Topic not specified\n";
         continue;
       }
-
       if (second.find(' ') != string::npos || second[0] == '/' ||
           second[second.length() - 1] == '/') {
-        // cerr << "Topic not formatted correctly\n";
         continue;
       }
 
       if (first.compare("subscribe") == 0) {
         printf("Subscribed to topic ");
+        sent_packet.type = MSG_SUBSCRIBE;
       } else if (first.compare("unsubscribe") == 0) {
         printf("Unsubscribed from topic ");
+        sent_packet.type = MSG_UNSUBSCRIBE;
       } else {
-        // cerr << "Command not allowed\n";
         continue;
       }
       printf("%s\n", second.c_str());
 
       sent_packet.len = strlen(buf) + 1;
-      strcpy(sent_packet.message, buf);
-
-      // Trimitem pachetul la server.
-      send_all(socket_fd, &sent_packet, sizeof(sent_packet));
+      strncpy(sent_packet.payload.text, buf, MAX_MSG_SIZE);
+      sent_packet.payload.text[MAX_MSG_SIZE] = 0;
+      send_to_client(socket_fd, sent_packet);
     }
   }
 }
@@ -148,11 +138,10 @@ int main(int argc, char *argv[]) {
 
   ChatPacket packet;
   packet.len = strlen(id) + 1;
-  strcpy(packet.message, id);
-
-  // Trimitem id-ul la server.
-  send_all(socket_fd, &packet, sizeof(packet));
-
+  packet.type = MSG_ID;
+  strncpy(packet.payload.id, id, MAX_CLIENT_ID_SIZE);
+  packet.payload.id[MAX_CLIENT_ID_SIZE-1] = 0;
+  send_to_client(socket_fd, packet);
   run_client(socket_fd);
 
   close(socket_fd);
