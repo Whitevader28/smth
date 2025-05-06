@@ -28,7 +28,7 @@ void run_multiplexed(int listenfd_tcp, int listenfd_udp) {
   DIE(rc < 0, "listen");
 
   while (1) {
-    // Verificam daca a fost tastat "exit" la stdin
+    // Check if "exit" was given from stdin
     if (connections.pollAll()) {
       break;
     }
@@ -49,7 +49,6 @@ int main(int argc, char *argv[]) {
   rc = sscanf(argv[1], "%hu", &port);
   DIE(rc != 1, "Given port is invalid");
 
-  // Cream un socket TCP pentru conexiunea cu un client
   int listenfd_tcp = create_tcp_listenfd(port, IP_DEFAULT_ROUTE);
   int listendfd_udp = create_udp_listenfd(port, IP_DEFAULT_ROUTE);
 

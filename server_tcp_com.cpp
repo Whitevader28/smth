@@ -11,39 +11,28 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <algorithm>  // For std::find
+#include <algorithm>
 #include <cassert>
 #include <deque>
 #include <iostream>
 #include <memory>
 #include <sstream>
 #include <string>
-#include <unordered_set>  // Required for std::unordered_set
+#include <unordered_set>
 #include <vector>
 
-#include "common.h"  // Includes ChatPacket, MessageType etc. Ensure common.h defines MAX_UDP_MSG_SIZE and MSG_UDP_FORWARD in MessageType enum
-#include "helpers.h"  // Includes DIE
+#include "common.h"
+#include "helpers.h"
 
-// --- Function Definitions for Socket Creation (restored from original) ---
 int create_tcp_listenfd(uint16_t port, const char* ip) {
   const int listenfd = socket(AF_INET, SOCK_STREAM, 0);
   DIE(listenfd < 0, "socket");
 
-  // Allow address reuse quickly
+  // Allow address reuse
   int enable = 1;
-  if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) <
-      0) {
+  if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
     perror("setsockopt(SO_REUSEADDR) failed");
-    // Consider closing fd and returning -1 or exiting
-  }
 
-  // Set socket to non-blocking *before* bind/listen if accept loop needs it
-  // if (!set_nonblocking(listenfd)) {
-  //     close(listenfd);
-  //     DIE(1,"set_nonblocking listenfd"); // Or return -1
-  // }
-
-  // Prepare server address structure
   struct sockaddr_in serv_addr;
   socklen_t socket_len = sizeof(struct sockaddr_in);
 
@@ -53,17 +42,10 @@ int create_tcp_listenfd(uint16_t port, const char* ip) {
   int rc = inet_pton(AF_INET, ip, &serv_addr.sin_addr.s_addr);
   DIE(rc <= 0, "inet_pton");
 
-  // Bind the socket
   rc = bind(listenfd, (const struct sockaddr*)&serv_addr, sizeof(serv_addr));
   DIE(rc < 0, "bind");
 
-  // Disable Nagle's algorithm (usually desired for low latency servers)
-  // Note: disable_nagle is defined in common.cpp/common.h
   disable_nagle(listenfd);
-
-  // Start listening (done in run_multiplexed in server.cpp now)
-  // rc = listen(listenfd, MAX_TCP_CONNECTIONS); // MAX_TCP_CONNECTIONS should
-  // be defined (e.g., in common.h) DIE(rc < 0, "listen");
 
   return listenfd;
 }
@@ -72,21 +54,17 @@ int create_udp_listenfd(uint16_t port, const char* ip) {
   const int listenfd = socket(AF_INET, SOCK_DGRAM, 0);
   DIE(listenfd < 0, "socket UDP");
 
-  // Allow address reuse quickly
+  // Allow address reuse
   int enable = 1;
-  if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) <
-      0) {
+  if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
     perror("setsockopt(SO_REUSEADDR) failed for UDP");
-    // Consider closing fd and returning -1 or exiting
-  }
 
-  // Set non-blocking if recvfrom will be used in a non-blocking way
+  // Set non-blocking
   if (!set_nonblocking(listenfd)) {
     close(listenfd);
-    DIE(1, "set_nonblocking listenfd_udp");  // Or return -1
+    DIE(1, "set_nonblocking listenfd_udp");
   }
 
-  // Prepare server address structure
   struct sockaddr_in serv_addr;
   socklen_t socket_len = sizeof(struct sockaddr_in);
 
@@ -96,13 +74,11 @@ int create_udp_listenfd(uint16_t port, const char* ip) {
   int rc = inet_pton(AF_INET, ip, &serv_addr.sin_addr.s_addr);
   DIE(rc <= 0, "inet_pton UDP");
 
-  // Bind the socket
   rc = bind(listenfd, (const struct sockaddr*)&serv_addr, sizeof(serv_addr));
   DIE(rc < 0, "bind UDP");
 
   return listenfd;
 }
-// --- End Function Definitions ---
 
 // Helper function to split a string by a delimiter
 static std::vector<std::string> split(const std::string& s, char delimiter) {
@@ -119,14 +95,10 @@ static std::vector<std::string> split(const std::string& s, char delimiter) {
   return tokens;
 }
 
-// --- ClientConnections Implementation ---
-
 int ClientConnections::find_poll_index(int fd) {
-  for (int i = 0; i < num_fds; ++i) {
-    if (poll_fds[i].fd == fd) {
-      return i;
-    }
-  }
+  for (int i = 0; i < num_fds; ++i)
+    if (poll_fds[i].fd == fd) return i;
+
   return -1;  // Not found
 }
 
@@ -135,48 +107,32 @@ void ClientConnections::add_fd(int fd, short int events, SocketType type) {
       MAX_TCP_CONNECTIONS + 3) {  // +3 for stdin, tcp_listen, udp_listen
     cerr << "Error: Maximum number of fds reached. Cannot add fd " << fd
          << endl;
-    // Optionally close fd here if it's a new client connection attempt?
+
     if (type == TCP_CLIENT_SOCKET) close(fd);
     return;
   }
+
   int index = num_fds;
   poll_fds[index].fd = fd;
   poll_fds[index].events = events;
-  poll_fds[index].revents = 0;  // Ensure revents is clear
+  poll_fds[index].revents = 0;
   fd_to_type[fd] = type;
   num_fds++;
-  // cerr << "Added fd " << fd << " (" << type << ") at index " << index << ",
-  // num_fds=" << num_fds << endl;
 }
 
+// Removes fd from poll_fds and associated maps
 void ClientConnections::remove_fd(int fd) {
   int pos = find_poll_index(fd);
   if (pos < 0) {
-    // cerr << "WARN: Tried to remove fd " << fd << " which is not in poll_fds."
-    // << endl; Clean up maps just in case
     fd_to_type.erase(fd);
-    // client_by_fd removal is handled in disconnect_tcp_client
     return;
   }
 
-  // cerr << "Removing fd " << fd << " at pos " << pos << ", num_fds was " <<
-  // num_fds << endl;
-
-  // Remove from maps first
   fd_to_type.erase(fd);
-  // Note: client_by_fd removal is handled in disconnect_tcp_client
 
-  // Shift remaining elements in poll_fds
-  // Use memmove for efficiency if needed, but loop is clear
-  for (int j = pos; j < num_fds - 1; j++) {
-    poll_fds[j] = poll_fds[j + 1];
-  }
-
-  // Clear the last element (optional but good practice)
-  memset(&poll_fds[num_fds - 1], 0, sizeof(struct pollfd));
+  for (int j = pos; j < num_fds - 1; j++) poll_fds[j] = poll_fds[j + 1];
 
   --num_fds;
-  // cerr << "Removed fd. num_fds is now " << num_fds << endl;
 }
 
 void ClientConnections::connect_tcp_client() {
@@ -190,57 +146,40 @@ void ClientConnections::connect_tcp_client() {
   if (newsockfd < 0) {
     // EAGAIN/EWOULDBLOCK means no more connections waiting right now
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      // This is expected if the listening socket is non-blocking and we loop
-      // accept
       return;
     }
     perror("accept");
-    return;  // Other error
+    return;
   }
 
-  // --- Configure the new socket ---
-  disable_nagle(newsockfd);  // Disable Nagle for low latency
+  disable_nagle(newsockfd);
 
-  if (!set_nonblocking(newsockfd)) {  // Make the client socket non-blocking
+  if (!set_nonblocking(newsockfd)) {
     cerr << "Error setting non-blocking for client fd " << newsockfd << endl;
     close(newsockfd);
     return;
   }
 
-  // --- Add to poll set immediately, wait for ID message ---
   // We add it *before* receiving the ID. We'll read the ID via the normal poll
-  // mechanism. Create a temporary state until ID is received? Or handle ID
-  // reception in handle_client_read? Let's create the state now, but mark as
-  // not fully connected until ID is validated.
   auto new_client = make_shared<ClientState>(newsockfd);
-  // Temporarily map the new fd to this state. This will be updated if it's a
-  // reconnect.
   client_by_fd[newsockfd] = new_client;
   add_fd(newsockfd, POLLIN,
          TCP_CLIENT_SOCKET);  // Initially just listen for read (for ID)
 
   char ip_str[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, INET_ADDRSTRLEN);
-  // Don't print the "New client..." message until the ID is received and
-  // validated.
   cerr << "Accepted connection from " << ip_str << ":"
        << ntohs(client_addr.sin_port) << " on fd " << newsockfd
        << ". Waiting for ID." << endl;
 }
 
-void ClientConnections::disconnect_tcp_client(int fd, bool cleanup_poll) {
-  // cerr << "Disconnecting client fd " << fd << endl; // Reduced verbosity
-
-  // Find client state using the file descriptor
+void ClientConnections::disconnect_tcp_client(int fd) {
   auto it_fd = client_by_fd.find(fd);
   if (it_fd != client_by_fd.end()) {
     shared_ptr<ClientState> client = it_fd->second;
 
-    // Print disconnect message only if client was fully connected (had valid
-    // ID)
-    if (client && client->connected) {  // Check client pointer validity too
-      printf("Client %s disconnected.\n",
-             client->id.c_str());  // Required output
+    if (client && client->connected) {
+      printf("Client %s disconnected.\n", client->id.c_str());
     } else {
       cerr << "Client on fd " << fd
            << " disconnected before sending/validating ID or client state "
@@ -248,77 +187,39 @@ void ClientConnections::disconnect_tcp_client(int fd, bool cleanup_poll) {
            << endl;
     }
 
-    // Update state (mark as disconnected, invalidate fd)
-    // The ClientState object itself remains in client_by_id
-    if (client) {  // Ensure client pointer is valid before accessing members
+    // Mark client as disconnected
+    // Keep his id in client_by_id for potential reconnections
+    if (client) {
       client->connected = false;
-      client->socketfd = -1;  // Mark socket fd as invalid in the client object
-      // Keep send_queue and recv_buffer for potential store-and-forward (if
-      // implemented) client->recv_buffer.clear(); // Clear receive buffer on
-      // disconnect? Depends on protocol. client->send_queue.clear(); // Clear
-      // send queue on disconnect? Depends on protocol.
-      // client->current_send_offset = 0;
+      client->socketfd = -1;
     } else {
-      cerr << "WARN: disconnect_tcp_client found invalid client pointer for fd "
-           << fd << endl;
+      cerr << "invalid client pointer for fd in disconnect_tcp_client: " << fd
+           << endl;
     }
 
-    // Remove from fd-based map (this is crucial as the fd is no longer valid)
     client_by_fd.erase(it_fd);
-
-    // *** IMPORTANT CHANGE: DO NOT remove client from client_by_id. ***
-    // *** Subscriptions persist in the ClientState object stored in
-    // client_by_id. ***
-
-    // *** IMPORTANT CHANGE: DO NOT call remove_client_subscriptions here. ***
-    // *** Subscriptions are kept for reconnects. ***
-
   } else {
-    cerr << "WARN: disconnect_tcp_client called for fd " << fd
-         << " which has no ClientState mapped in client_by_fd." << endl;
-    // This might happen if the fd was already cleaned up, but let's try to
-    // remove from poll anyway.
+    cerr << "disconnect_tcp_client called for fd " << fd
+         << " has no entry in client_by_fd." << endl;
   }
 
-  // Close the socket file descriptor
   close(fd);
-
-  // Remove from poll set if requested (usually yes)
-  if (cleanup_poll) {
-    remove_fd(fd);
-  }
+  remove_fd(fd);
 }
 
 void ClientConnections::onExit() {
   ChatPacket packet;
   memset(&packet, 0, sizeof(packet));
-  packet.len = strlen("exit") + 1;  // Include null terminator
+  packet.len = strlen("exit") + 1;  // Include '\0'
   packet.type = MSG_EXIT;
-  strncpy(packet.payload.text, "exit", packet.len);  // Copy "exit"
+  strncpy(packet.payload.text, "exit", packet.len);
 
-  cerr << "Server shutting down. Sending exit to connected clients..." << endl;
+  cerr << "Server closing. Sending message to all clients" << endl;
 
-  // Iterate through currently connected clients using client_by_fd
-  vector<int> client_fds_to_notify;
-  for (auto const& [fd, client_ptr] : client_by_fd) {
-    // Only notify currently connected clients
-    if (client_ptr && client_ptr->connected && client_ptr->socketfd >= 0) {
-      client_fds_to_notify.push_back(fd);
-    }
-  }
-
-  for (int client_fd : client_fds_to_notify) {
-    auto it = client_by_fd.find(client_fd);
-    if (it != client_by_fd.end()) {
-      shared_ptr<ClientState> client = it->second;
-      cerr << "Sending exit to client fd: " << client_fd
-           << " (ID: " << client->id << ")" << endl;
-      // Use send_packet logic which queues/sends
-      send_message_to_client(client, packet);
-    }
-  }
-  // Consider adding a short sleep or a final poll with timeout here if needed
-  // sleep(1); // Give time for messages to potentially be sent
+  // Notify connected clients
+  for (auto const& [fd, client_ptr] : client_by_fd)
+    if (client_ptr && client_ptr->connected && client_ptr->socketfd >= 0)
+      send_message_to_client(client_ptr, packet);
 }
 
 int ClientConnections::handle_stdin() {
@@ -328,29 +229,27 @@ int ClientConnections::handle_stdin() {
   int rc = read(STDIN_FILENO, buf, MAX_MSG_SIZE);
   if (rc < 0) {
     perror("read stdin");
-    return 0;  // Don't exit on stdin read error
+    return 0;
   }
-  if (rc == 0) {  // EOF on stdin
-    cerr << "EOF received on stdin. Initiating exit." << endl;
-    return 1;  // Treat EOF as exit command
-  }
+
+  if (rc == 0) return 0;  // Don't tread EOF as a command
 
   // Remove trailing newline if present
   if (rc > 0 && buf[rc - 1] == '\n') {
     buf[rc - 1] = '\0';
   } else {
-    buf[rc] = '\0';  // Null terminate if newline wasn't the last char
+    buf[rc] = '\0';
   }
 
   if (strcmp(buf, "exit") == 0) {
     cerr << "Exit command received from stdin." << endl;
-    return 1;  // Signal to main loop to exit
+    return 1;  // Signal to exit
   } else {
     cerr << "Unknown command from stdin: '" << buf << "'. Use 'exit' to quit."
          << endl;
   }
 
-  return 0;  // Continue loop
+  return 0;
 }
 
 bool ClientConnections::match_topic(const string& topic,
@@ -416,10 +315,8 @@ bool ClientConnections::match_topic(const string& topic,
 }
 
 void ClientConnections::handle_udp_message(int udp_fd) {
-  // Assuming MAX_UDP_MSG_SIZE is defined in common.h
-  char raw_udp_buf[MAX_UDP_MSG_SIZE + 1];  // Buffer for the raw UDP payload
-  memset(raw_udp_buf, 0,
-         sizeof(raw_udp_buf));  // Now memset is after declaration
+  char raw_udp_buf[MAX_UDP_MSG_SIZE + 1];
+  memset(raw_udp_buf, 0, sizeof(raw_udp_buf));
 
   struct sockaddr_in client_addr;
   memset(&client_addr, 0, sizeof(client_addr));
@@ -430,9 +327,9 @@ void ClientConnections::handle_udp_message(int udp_fd) {
 
   if (rc < 0) {
     // EAGAIN or EWOULDBLOCK is expected on non-blocking UDP socket
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
       return;  // No datagram available right now
-    }
+
     perror("recvfrom UDP");
     return;
   }
@@ -441,33 +338,27 @@ void ClientConnections::handle_udp_message(int udp_fd) {
     return;
   }
 
-  // --- Basic validation of UDP packet structure ---
-  // Needs topic (max 50) + type (1) = 51 bytes minimum?
-  if (rc < 50 + 1) {  // Need space for topic and type byte
+  if (rc < 50 + 1) {  // Need at least 51 bytes (50 for topic + 1 for type)
     cerr << "Error: Received UDP packet too short for topic+type (" << rc
          << " bytes)" << endl;
     return;
   }
 
-  // --- Extract Topic ---
-  char topic_name[51];  // Buffer for topic name + null terminator
+  char topic_name[51];  // Buffer for topic name
   strncpy(topic_name, raw_udp_buf, 50);
-  topic_name[50] = '\0';  // Ensure null termination for safety
+  topic_name[50] = '\0';
   string udp_topic_str(topic_name);
 
-  // --- Extract Data Type ---
-  uint8_t data_type = (uint8_t)raw_udp_buf[50];
-
-  // --- Prepare the message payload to forward to TCP clients ---
+  // Extract the message for TCP clients and construct the response
   ChatPacket packet_to_tcp;
   memset(&packet_to_tcp, 0, sizeof(packet_to_tcp));
-  // Assuming MSG_UDP_FORWARD is defined in MessageType enum in common.h
-  packet_to_tcp.type =
-      MSG_UDP_FORWARD;  // Use a specific type for forwarded UDP messages
+  packet_to_tcp.type = MSG_UDP_FORWARD;
 
-  char* tcp_msg_payload =
-      packet_to_tcp.payload.text;  // Pointer to payload buffer
-  int tcp_payload_len = 0;         // Current length of the payload being built
+  char* tcp_msg_payload = packet_to_tcp.payload.text;
+  int tcp_payload_len = 0;
+
+  // 0. Get data type
+  uint8_t data_type = (uint8_t)raw_udp_buf[50];
 
   // 1. Format sender IP:PORT prefix
   char ip_str[INET_ADDRSTRLEN];
@@ -483,38 +374,36 @@ void ClientConnections::handle_udp_message(int udp_fd) {
 
   // 3. Parse UDP content based on TYPE and format it
   const char* type_str = "UNKNOWN";
-  char formatted_value[MAX_CONTENT_SIZE + 20] = {
-      0};  // Buffer for formatted value string (+extra space)
-  const char* udp_content_ptr = raw_udp_buf + 51;  // Start of content payload
-  int udp_content_len = rc - 51;                   // Length of content payload
+  char formatted_value[MAX_CONTENT_SIZE + 20] = {0};
+  const char* udp_content_ptr = raw_udp_buf + 51;  // Start of content
+  int udp_content_len = rc - 51;
 
   // Check if received data is sufficient for the declared type
   bool data_ok = true;
-  uint8_t sign;             // Moved declaration outside switch
-  uint32_t int_val;         // Moved declaration outside switch
-  uint16_t short_real_val;  // Moved declaration outside switch
-  uint32_t float_mod;       // Moved declaration outside switch
-  uint8_t float_pow;        // Moved declaration outside switch
+  uint8_t sign;
+  uint32_t int_val;
+  uint16_t short_real_val;
+  uint32_t float_mod;
+  uint8_t float_pow;
 
   switch (data_type) {
     case 0:  // INT
-    {  // Added scope for local variables if any (none here, but good practice)
+    {
       type_str = "INT";
       if (udp_content_len < 1 + 4) {
         data_ok = false;
         break;
       }
       sign = (uint8_t)udp_content_ptr[0];
-      // Use memcpy to avoid potential alignment issues when casting pointers
       memcpy(&int_val, udp_content_ptr + 1, sizeof(uint32_t));
       int_val = ntohl(int_val);
       snprintf(formatted_value, sizeof(formatted_value), "%s%u",
                (sign == 1 && int_val > 0 ? "-" : ""), int_val);
       break;
-    }  // End case 0 scope
+    }
 
     case 1:  // SHORT_REAL
-    {        // Added scope
+    {
       type_str = "SHORT_REAL";
       if (udp_content_len < 2) {
         data_ok = false;
@@ -526,10 +415,10 @@ void ClientConnections::handle_udp_message(int udp_fd) {
       snprintf(formatted_value, sizeof(formatted_value), "%.2f",
                short_real_val / 100.0);
       break;
-    }  // End case 1 scope
+    }
 
     case 2:  // FLOAT
-    {        // Added scope to contain float_val initialization
+    {
       type_str = "FLOAT";
       if (udp_content_len < 1 + 4 + 1) {
         data_ok = false;
@@ -540,7 +429,7 @@ void ClientConnections::handle_udp_message(int udp_fd) {
       float_mod = ntohl(float_mod);
       float_pow = (uint8_t)udp_content_ptr[1 + 4];
       // Calculate the float value carefully
-      double float_val = (double)float_mod;  // Initialization inside the scope
+      double float_val = (double)float_mod;
       if (float_pow > 0) {
         float_val /= pow(10.0, float_pow);
       }
@@ -549,10 +438,10 @@ void ClientConnections::handle_udp_message(int udp_fd) {
       snprintf(formatted_value, sizeof(formatted_value), "%s%.10g",
                (sign == 1 && float_val > 0 ? "-" : ""), float_val);
       break;
-    }  // End case 2 scope
+    }
 
     case 3:  // STRING
-    {        // Added scope to contain copy_len initialization
+    {
       type_str = "STRING";
       // Content starts at udp_content_ptr. Max length is udp_content_len.
       int copy_len = udp_content_len;  // Initialization inside the scope
@@ -562,80 +451,59 @@ void ClientConnections::handle_udp_message(int udp_fd) {
              << copy_len << "), truncating." << endl;
         copy_len = MAX_CONTENT_SIZE;
       }
-      // Copy safely, ensuring null termination
-      // Use memcpy for potentially non-null-terminated data, then add
-      // terminator
-      memcpy(formatted_value, udp_content_ptr, copy_len);
-      // strncpy(formatted_value, udp_content_ptr, copy_len);
-      formatted_value[copy_len] = '\0';  // Ensure null termination
-      break;
-    }  // End case 3 scope
 
-    default: {  // Added scope
+      memcpy(formatted_value, udp_content_ptr, copy_len);
+      formatted_value[copy_len] = '\0';
+      break;
+    }
+
+    default: {
       data_ok = false;
       break;
-    }  // End default scope
-  }  // End switch
+    }
+  }
 
   if (!data_ok) {
     cerr << "Error: Invalid or incomplete UDP data for type " << (int)data_type
          << " in packet from " << ip_str << ":" << ntohs(client_addr.sin_port)
          << " (content len: " << udp_content_len << ")" << endl;
     snprintf(formatted_value, sizeof(formatted_value), "[Invalid Data]");
-    // Decide whether to forward invalid messages or drop them. Let's drop them.
+
+    // Drop the packet
     return;
   }
 
-  // 4. Append TYPE string (Check available space)
-  if (MAX_MSG_SIZE > tcp_payload_len) {
+  // 4. Append TYPE string
+  if (MAX_MSG_SIZE > tcp_payload_len)
     tcp_payload_len +=
         snprintf(tcp_msg_payload + tcp_payload_len,
                  MAX_MSG_SIZE - tcp_payload_len, "%s - ", type_str);
-  }
 
-  // 5. Append formatted VALUE (Check available space)
-  if (MAX_MSG_SIZE > tcp_payload_len) {
+  // 5. Append formatted VALUE
+  if (MAX_MSG_SIZE > tcp_payload_len)
     tcp_payload_len +=
         snprintf(tcp_msg_payload + tcp_payload_len,
                  MAX_MSG_SIZE - tcp_payload_len, "%s", formatted_value);
-  }
 
-  // --- Finalize TCP packet ---
-  // Ensure null termination within MAX_MSG_SIZE
   if (tcp_payload_len >= MAX_MSG_SIZE) {
-    tcp_payload_len = MAX_MSG_SIZE - 1;  // Leave space for null terminator
+    tcp_payload_len = MAX_MSG_SIZE - 1;  // Space for '\0'
     cerr << "WARN: Constructed TCP payload truncated to fit MAX_MSG_SIZE."
          << endl;
   }
+
   tcp_msg_payload[tcp_payload_len] = '\0';
-  packet_to_tcp.len = tcp_payload_len + 1;  // Length includes null terminator
+  packet_to_tcp.len = tcp_payload_len + 1;
 
-  // cerr << "Prepared TCP forward: len=" << packet_to_tcp.len << ", payload='"
-  // << tcp_msg_payload << "'" << endl;
-
-  // --- Broadcast to subscribed TCP clients ---
   broadcast_udp_message(udp_topic_str, packet_to_tcp);
 }
 
 void ClientConnections::broadcast_udp_message(const string& udp_topic,
                                               const ChatPacket& tcp_packet) {
-  // Keep track of clients already notified for this specific message to avoid
-  // duplicates if multiple wildcard patterns match the same client for the same
-  // topic.
-  unordered_set<string> notified_client_ids;
-
-  // Iterate through all client states stored by ID (these are the potentially
-  // subscribed clients)
   for (const auto& id_client_pair : client_by_id) {
-    const string& client_id = id_client_pair.first;
     shared_ptr<ClientState> client = id_client_pair.second;
 
-    // Check if the client is currently connected AND not already notified for
-    // this message
-    if (client && client->connected && client->socketfd >= 0 &&
-        notified_client_ids.find(client_id) == notified_client_ids.end()) {
-      // Check if this connected client is subscribed to the topic or a matching
-      // pattern
+    // Send the message only to connected and subscribed clients
+    if (client && client->connected && client->socketfd >= 0) {
       bool is_subscribed = false;
       for (const string& pattern : client->subscriptions) {
         if (match_topic(udp_topic, pattern)) {
@@ -645,42 +513,23 @@ void ClientConnections::broadcast_udp_message(const string& udp_topic,
       }
 
       if (is_subscribed) {
-        // cerr << "  Forwarding to client ID: " << client_id << " (fd: " <<
-        // client->socketfd << ") for topic '" << udp_topic << "'" << endl;
         send_message_to_client(client, tcp_packet);
-        notified_client_ids.insert(
-            client_id);  // Mark as notified for this message
-      } else {
-        // cerr << "  Client ID: " << client_id << " is connected but not
-        // subscribed to topic '" << udp_topic << "'" << endl;
       }
-    } else {
-      // cerr << "  Skipping client ID: " << client_id << " (not connected,
-      // invalid state, or already notified)" << endl;
     }
-  }
-
-  if (notified_client_ids.empty()) {
-    // cerr << "No connected clients subscribed to topic '" << udp_topic << "'"
-    // << endl;
   }
 }
 
 void ClientConnections::send_message_to_client(shared_ptr<ClientState> client,
                                                const ChatPacket& packet) {
   if (!client || !client->connected || client->socketfd < 0) {
-    // cerr << "WARN: Attempted to send to disconnected or invalid client (ID: "
-    // << (client ? client->id : "N/A") << ")" << endl;
     return;
   }
 
-  // Serialize the packet (header + payload) into a byte vector
   uint16_t net_len = htons(packet.len);
   uint32_t net_type =
       htonl(static_cast<int>(packet.type));  // Ensure type is sent as 4 bytes
   size_t header_size = sizeof(net_len) + sizeof(net_type);
-  // Validate packet.len before calculating total_size
-  // Allow for ID message payload which might exceed MAX_MSG_SIZE slightly
+
   size_t max_allowed_payload_for_send =
       (packet.type == MSG_ID) ? MAX_CLIENT_ID_SIZE : MAX_MSG_SIZE;
 

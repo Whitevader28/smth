@@ -104,7 +104,7 @@ class ClientConnections {
     void unsubscribe_client_from_topic(shared_ptr<ClientState> client, const string& topic_pattern);
     void remove_client_subscriptions(shared_ptr<ClientState> client); // Clean up subscriptions on disconnect
 
-    void disconnect_tcp_client(int fd, bool cleanup_poll = true); // Disconnects a client, updates state, cleans maps
+    void disconnect_tcp_client(int fd); // Disconnects a client, updates state, cleans maps
     void onExit(); // Sends exit message to all connected clients
 
     // Wildcard matching helper
