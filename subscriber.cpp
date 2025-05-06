@@ -9,31 +9,26 @@
 
 #include <iostream>
 #include <unordered_map>
-#include <string> // Required for std::string
-#include <vector> // Required for std::vector
+#include <string>
+#include <vector>
 
 #include "common.h"
 #include "helpers.h"
-// #include "server_tcp_com.h" // Not strictly needed in subscriber if only using common.h functions
 
 using namespace std;
 
-// Function to receive a ChatPacket from the server
-// Uses blocking recv_all from common.cpp
 int receive_packet(int sockfd, ChatPacket& packet) {
     // Receive header first (length and type)
     size_t header_size = sizeof(uint16_t) + sizeof(uint32_t);
     vector<char> header_buffer(header_size);
 
     int rc = recv_all(sockfd, header_buffer.data(), header_size);
-    if (rc <= 0) {
-        // Connection closed or error during header receive
+    if (rc <= 0)
         return rc;
-    }
+
     if ((size_t)rc != header_size) {
-        // Should not happen with recv_all unless connection closed partially
         cerr << "Error: Partial header received (" << rc << "/" << header_size << ")" << endl;
-        return -1; // Indicate error
+        return -1;
     }
 
     // Extract length and type from header buffer (network byte order)
