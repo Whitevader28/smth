@@ -45,4 +45,4 @@ class ChatPacket {
   void print_message();
 };
 
-#endif
+#endif // __COMMON_H__
