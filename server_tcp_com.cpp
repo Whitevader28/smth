@@ -276,8 +276,7 @@ bool ClientConnections::match_topic(const string& topic,
     return false;
   }
 
-  // Dynamic programming approach for '*' wildcard
-  // dp[i][j] will be true if the first i levels of the topic match the first j
+  // dp[i][j] is true if the first i levels of the topic match the first j
   // levels of the pattern
   vector<vector<bool>> dp(topic_levels.size() + 1,
                           vector<bool>(pattern_levels.size() + 1, false));
@@ -287,7 +286,7 @@ bool ClientConnections::match_topic(const string& topic,
 
   // Handle patterns starting with '*'
   if (!pattern_levels.empty() && pattern_levels[0] == "*") {
-    dp[0][1] = true;  // '*' can match zero levels
+    dp[0][1] = true;
   }
 
   for (size_t i = 1; i <= topic_levels.size(); ++i) {
@@ -525,23 +524,20 @@ void ClientConnections::send_message_to_client(shared_ptr<ClientState> client,
     return;
   }
 
+  // Ensure type is sent as 4 bytes
   uint16_t net_len = htons(packet.len);
-  uint32_t net_type =
-      htonl(static_cast<int>(packet.type));  // Ensure type is sent as 4 bytes
+  uint32_t net_type = htonl(static_cast<int>(packet.type));
   size_t header_size = sizeof(net_len) + sizeof(net_type);
 
   size_t max_allowed_payload_for_send =
       (packet.type == MSG_ID) ? MAX_CLIENT_ID_SIZE : MAX_MSG_SIZE;
 
-  if (packet.len > (MAX_MSG_SIZE + MAX_CLIENT_ID_SIZE +
-                    100)) {  // General sanity check length
-    cerr << "ERROR: send_message_to_client called with excessive packet.len="
-         << packet.len << ". Dropping message for client " << client->id << "."
-         << endl;
+  if (packet.len > (MAX_MSG_SIZE + MAX_CLIENT_ID_SIZE + 100)) {
+    cerr << "ERROR: send_message_to_client too big packet=" << packet.len
+         << ". Dropping message for client " << client->id << "." << endl;
     return;
   }
-  if (packet.len > max_allowed_payload_for_send &&
-      packet.type != MSG_ID) {  // Check specific limit for non-ID types
+  if (packet.len > max_allowed_payload_for_send && packet.type != MSG_ID) {
     cerr << "ERROR: send_message_to_client called with payload length "
          << packet.len << " exceeding limit " << max_allowed_payload_for_send
          << " for msg type " << packet.type << ". Dropping message for client "
@@ -554,8 +550,8 @@ void ClientConnections::send_message_to_client(shared_ptr<ClientState> client,
   vector<char> message_buffer(total_size);
   memcpy(message_buffer.data(), &net_len, sizeof(net_len));
   memcpy(message_buffer.data() + sizeof(net_len), &net_type, sizeof(net_type));
-  // Ensure payload copy does not exceed buffer bounds or packet length
   size_t payload_copy_len = packet.len;
+
   // Limit copy length to available payload data and buffer size
   if (payload_copy_len > sizeof(packet.payload)) {
     cerr << "WARN: send_message_to_client: Packet payload length "
@@ -567,45 +563,34 @@ void ClientConnections::send_message_to_client(shared_ptr<ClientState> client,
     cerr << "ERROR: send_message_to_client: Internal logic error calculating "
             "buffer sizes for send. Adjusting copy length."
          << endl;
-    // Avoid buffer overflow during memcpy
+
     payload_copy_len = total_size > header_size ? total_size - header_size : 0;
   }
 
   memcpy(message_buffer.data() + header_size, &packet.payload,
-         payload_copy_len);  // Copy payload safely
+         payload_copy_len);
 
-  // Add the serialized message to the client's send queue
   client->send_queue.push_back(std::move(message_buffer));
-  // cerr << "Queued message (type " << packet.type << ", total size " <<
-  // total_size << ") for client " << client->id << ". Queue size: " <<
-  // client->send_queue.size() << endl;
 
   // Check if we can start sending immediately (if queue was empty)
-  // and register for POLLOUT events if needed.
+  // and register for POLLOUT events if needed
   int poll_idx = find_poll_index(client->socketfd);
   if (poll_idx != -1) {
     // If the send queue was empty before adding this message,
-    // we might be able to send immediately. Try a non-blocking send.
-    // Also, ensure POLLOUT is set so poll() wakes us up when ready to send
-    // more.
+    // we might be able to send immediately
     if (client->send_queue.size() == 1 && client->current_send_offset == 0) {
       handle_client_write(client);  // Attempt initial send
     }
 
     // Make sure POLLOUT is registered if there's data pending
     if (!client->send_queue.empty()) {
-      if (!(poll_fds[poll_idx].events & POLLOUT)) {
-        // cerr << "Adding POLLOUT for fd " << client->socketfd << endl;
+      if (!(poll_fds[poll_idx].events & POLLOUT))
         poll_fds[poll_idx].events |= POLLOUT;
-      }
     } else {
       // Should not happen right after adding, but for completeness:
       // If queue becomes empty, remove POLLOUT
-      if (poll_fds[poll_idx].events & POLLOUT) {
-        // cerr << "Queue empty, removing POLLOUT for fd " << client->socketfd
-        // << endl;
+      if (poll_fds[poll_idx].events & POLLOUT)
         poll_fds[poll_idx].events &= ~POLLOUT;
-      }
     }
   } else {
     cerr << "ERROR: Cannot find client fd " << client->socketfd
@@ -613,35 +598,25 @@ void ClientConnections::send_message_to_client(shared_ptr<ClientState> client,
   }
 }
 
-// --- Non-blocking Read/Write Handlers ---
-
 void ClientConnections::handle_client_read(shared_ptr<ClientState> client) {
   if (!client || client->socketfd < 0) return;
 
-  // Use a larger buffer if MAX_MSG_SIZE is large, or read in smaller chunks
-  char read_buf[4096];  // Temporary buffer for reading (adjust size as needed)
+  char read_buf[4096];
   int bytes_read =
       recv_nonblocking(client->socketfd, read_buf, sizeof(read_buf));
 
-  if (bytes_read == -1) {  // Genuine error
+  if (bytes_read == -1) {
     cerr << "Error reading from client fd " << client->socketfd
          << " (ID: " << client->id << "). Disconnecting." << endl;
     disconnect_tcp_client(client->socketfd);
   } else if (bytes_read == 0) {  // Connection closed by peer
-    // cerr << "Client fd " << client->socketfd << " (ID: " << client->id << ")
-    // closed connection." << endl;
     disconnect_tcp_client(client->socketfd);
-  } else if (bytes_read == -2) {  // EAGAIN / EWOULDBLOCK
-    // Nothing to read right now, perfectly normal for non-blocking
-    // cerr << "No data available to read on fd " << client->socketfd << " right
-    // now." << endl;
+  } else if (bytes_read == -2) {
+    // EAGAIN / EWOULDBLOCK - no data available right now
+    return;
   } else {  // Data received
-    // cerr << "Read " << bytes_read << " bytes from fd " << client->socketfd <<
-    // " (ID: " << client->id << ")" << endl; Append data to client's persistent
-    // receive buffer
     client->recv_buffer.insert(client->recv_buffer.end(), read_buf,
                                read_buf + bytes_read);
-    // Process the buffer to extract complete messages
     process_received_data(client);
   }
 }
@@ -653,8 +628,6 @@ void ClientConnections::handle_client_write(shared_ptr<ClientState> client) {
     if (client && client->socketfd >= 0) {
       int poll_idx = find_poll_index(client->socketfd);
       if (poll_idx != -1 && (poll_fds[poll_idx].events & POLLOUT)) {
-        // cerr << "Send queue empty for fd " << client->socketfd << ". Removing
-        // POLLOUT." << endl;
         poll_fds[poll_idx].events &= ~POLLOUT;
       }
     }
@@ -666,9 +639,6 @@ void ClientConnections::handle_client_write(shared_ptr<ClientState> client) {
   size_t bytes_to_send = current_message.size() - client->current_send_offset;
   const char* send_ptr = current_message.data() + client->current_send_offset;
 
-  // cerr << "Attempting to write " << bytes_to_send << " bytes to fd " <<
-  // client->socketfd << " (ID: " << client->id << ")" << endl;
-
   int bytes_sent = send_nonblocking(client->socketfd, send_ptr, bytes_to_send);
 
   if (bytes_sent == -1) {  // Genuine error
@@ -676,40 +646,24 @@ void ClientConnections::handle_client_write(shared_ptr<ClientState> client) {
          << " (ID: " << client->id << "). Disconnecting." << endl;
     disconnect_tcp_client(client->socketfd);  // Error -> disconnect
   } else if (bytes_sent == 0) {  // EAGAIN / EWOULDBLOCK (or sent 0)
-    // Cannot send more right now. Keep POLLOUT registered.
-    // cerr << "Send buffer full for fd " << client->socketfd << ". Will retry
-    // later." << endl; Ensure POLLOUT is still set
     int poll_idx = find_poll_index(client->socketfd);
     if (poll_idx != -1 && !(poll_fds[poll_idx].events & POLLOUT)) {
-      // cerr << "Re-adding POLLOUT for fd " << client->socketfd << " as send
-      // blocked." << endl;
       poll_fds[poll_idx].events |= POLLOUT;
     }
   } else {  // Successfully sent some bytes
     client->current_send_offset += bytes_sent;
-    // cerr << "Sent " << bytes_sent << " bytes to fd " << client->socketfd <<
-    // ". Total sent for this msg: " << client->current_send_offset << "/" <<
-    // current_message.size() << endl;
 
     // Check if the current message is fully sent
     if (client->current_send_offset == current_message.size()) {
-      // cerr << "Finished sending message for fd " << client->socketfd << ".
-      // Queue size before pop: " << client->send_queue.size() << endl;
       client->send_queue.pop_front();
       client->current_send_offset = 0;
-      // cerr << "Queue size after pop: " << client->send_queue.size() << endl;
 
       // If the queue is now empty, remove POLLOUT interest
       if (client->send_queue.empty()) {
         int poll_idx = find_poll_index(client->socketfd);
-        if (poll_idx != -1 && (poll_fds[poll_idx].events & POLLOUT)) {
-          // cerr << "Send queue empty for fd " << client->socketfd << ".
-          // Removing POLLOUT." << endl;
+        if (poll_idx != -1 && (poll_fds[poll_idx].events & POLLOUT))
           poll_fds[poll_idx].events &= ~POLLOUT;
-        }
       } else {
-        // More messages in queue, try sending the next one immediately? NO -
-        // let poll decide. Ensure POLLOUT is still set if more data remains
         int poll_idx = find_poll_index(client->socketfd);
         if (poll_idx != -1 && !(poll_fds[poll_idx].events & POLLOUT)) {
           poll_fds[poll_idx].events |= POLLOUT;
@@ -719,8 +673,6 @@ void ClientConnections::handle_client_write(shared_ptr<ClientState> client) {
       // Message partially sent, ensure POLLOUT is set to try again later
       int poll_idx = find_poll_index(client->socketfd);
       if (poll_idx != -1 && !(poll_fds[poll_idx].events & POLLOUT)) {
-        // cerr << "Adding POLLOUT for fd " << client->socketfd << " as message
-        // partially sent." << endl;
         poll_fds[poll_idx].events |= POLLOUT;
       }
     }
@@ -735,13 +687,10 @@ void ClientConnections::process_received_data(shared_ptr<ClientState> client) {
     message_processed = false;
     vector<char>& buf = client->recv_buffer;
     size_t buf_size = buf.size();
-    size_t header_size =
-        sizeof(uint16_t) + sizeof(uint32_t);  // len (2) + type (4)
+    size_t header_size = sizeof(uint16_t) + sizeof(uint32_t);
 
     // Need at least enough data for the header
     if (buf_size < header_size) {
-      // cerr << "Recv buffer (" << buf_size << " bytes) too small for header ("
-      // << header_size << "). Waiting for more data." << endl;
       break;  // Not enough data for a header yet
     }
 
@@ -779,9 +728,6 @@ void ClientConnections::process_received_data(shared_ptr<ClientState> client) {
 
     // Check if the complete message is available in the buffer
     if (buf_size >= total_msg_len) {
-      // cerr << "Complete message found in buffer (type " << msg_type << ",
-      // payload " << payload_len << ", total " << total_msg_len << "). Buffer
-      // size: " << buf_size << endl; We have a full message, extract it
       ChatPacket received_packet;
       memset(&received_packet, 0, sizeof(received_packet));
       received_packet.len = payload_len;
@@ -790,10 +736,6 @@ void ClientConnections::process_received_data(shared_ptr<ClientState> client) {
       // Safely copy payload, respecting buffer sizes
       size_t copy_len = payload_len;
       if (copy_len > sizeof(received_packet.payload)) {
-        cerr << "WARN: Received payload length " << copy_len
-             << " exceeds internal packet buffer "
-             << sizeof(received_packet.payload)
-             << ". Truncating data for processing." << endl;
         copy_len = sizeof(received_packet.payload);
       }
       memcpy(&received_packet.payload, buf.data() + header_size, copy_len);
@@ -812,10 +754,6 @@ void ClientConnections::process_received_data(shared_ptr<ClientState> client) {
                                  // check buffer again
 
     } else {
-      // cerr << "Incomplete message in buffer (type " << msg_type << ", payload
-      // " << payload_len << ", total " << total_msg_len << "). Need " <<
-      // total_msg_len << ", have " << buf_size << ". Waiting for more data." <<
-      // endl;
       break;  // Not enough data for the full message yet
     }
 
@@ -827,7 +765,6 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
                                             const ChatPacket& packet) {
   if (!client) return;
 
-  // --- Handle ID message first (special case) ---
   if (!client->connected) {
     if (packet.type == MSG_ID) {
       // Validate ID length (payload length from header)
@@ -838,17 +775,12 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
         return;
       }
 
-      // Ensure null termination for safety when creating std::string
-      char client_id_cstr[MAX_CLIENT_ID_SIZE + 1];  // +1 for safety null term
-      // Use packet.len for strncpy length, as it's validated against
-      // MAX_CLIENT_ID_SIZE Note: packet.len includes the null terminator sent
-      // by the client.
+      char client_id_cstr[MAX_CLIENT_ID_SIZE + 1];
       size_t copy_len = packet.len;
-      if (copy_len > MAX_CLIENT_ID_SIZE + 1)
-        copy_len = MAX_CLIENT_ID_SIZE + 1;  // Sanity limit
+      if (copy_len > MAX_CLIENT_ID_SIZE + 1) copy_len = MAX_CLIENT_ID_SIZE + 1;
+
       strncpy(client_id_cstr, packet.payload.id, copy_len);
-      client_id_cstr[copy_len > 0 ? copy_len - 1 : 0] =
-          '\0';  // Ensure null termination at copied length or 0 if empty
+      client_id_cstr[copy_len > 0 ? copy_len - 1 : 0] = '\0';
       string client_id_str(client_id_cstr);
 
       // Check if ID is already connected
@@ -856,10 +788,9 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
         shared_ptr<ClientState> existing_client = client_by_id[client_id_str];
         if (existing_client && existing_client->connected) {
           // Client ID already in use and connected
-          printf("Client %s already connected.\n",
-                 client_id_str.c_str());  // Required output
+          printf("Client %s already connected.\n", client_id_str.c_str());
 
-          // Send error message back to the *new* connection attempt
+          // Send error message back
           ChatPacket err_packet;
           memset(&err_packet, 0, sizeof(err_packet));
           const char* errMsg = "EINUSE";
@@ -868,18 +799,12 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
           strncpy(err_packet.payload.text, errMsg, err_packet.len);
           // Queue the error message (non-blocking)
           send_message_to_client(client, err_packet);
-          // Disconnect the *new* connection attempt shortly after sending error
-          // Maybe add a flag to disconnect after write finishes? For now,
-          // disconnect immediately.
           disconnect_tcp_client(client->socketfd);
-          return;  // Stop processing for this fd
+          return;
         } else {
-          // Reconnect scenario: ID exists but is not currently connected
-          // Update the existing ClientState object with the new socket fd
-          // The existing_client object holds the persistent subscriptions.
+          // Reconnect client
           cerr << "Client " << client_id_str << " reconnected." << endl;
 
-          // Remove the old fd mapping if it somehow still exists (shouldn't)
           if (existing_client && existing_client->socketfd >= 0 &&
               existing_client->socketfd != client->socketfd) {
             cerr << "WARN: Found old socket fd " << existing_client->socketfd
@@ -889,29 +814,17 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
             disconnect_tcp_client(existing_client->socketfd);
           }
 
-          // Update the existing client state with the new fd and connected
-          // status
           existing_client->socketfd = client->socketfd;
           existing_client->connected = true;
-          // Keep existing recv_buffer and send_queue for potential SF (if
-          // implemented) Clear them if SF is NOT implemented or desired on
-          // reconnect. For now, let's clear them for simplicity unless SF is
-          // explicitly handled.
           existing_client->recv_buffer.clear();
           existing_client->send_queue.clear();
           existing_client->current_send_offset = 0;
 
-          // Update the fd -> client mapping to point to the *existing* state
-          // object The current 'client' shared_ptr (pointing to the temporary
-          // state created in connect_tcp_client) will go out of scope. We need
-          // to update the map entry for the *new* fd to point to the persistent
-          // existing_client object.
           client_by_fd[client->socketfd] = existing_client;
 
           // Print connection message
           struct sockaddr_in peer_addr;
           socklen_t peer_len = sizeof(peer_addr);
-          // Use the new socket fd to get peer name
           if (getpeername(existing_client->socketfd,
                           (struct sockaddr*)&peer_addr, &peer_len) == 0) {
             char ip_str[INET_ADDRSTRLEN];
@@ -925,21 +838,13 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
                    client_id_str.c_str());
           }
 
-          // Subscriptions are already in existing_client->subscriptions.
-          // No need to add to topic_subscribers here, it's done during
-          // subscribe. The broadcast logic will find this client by ID and
-          // check its 'connected' status.
-
-          // Client is now fully connected
-          return;  // Finished processing ID for reconnect
+          return;
         }
       } else {
         // New client connection
         client->id = client_id_str;
         client->connected = true;
-        client_by_id[client_id_str] =
-            client;  // Add to ID map (persistent storage)
-        // client_by_fd[client->socketfd] is already set in connect_tcp_client
+        client_by_id[client_id_str] = client;
 
         // Print connection message
         struct sockaddr_in peer_addr;
@@ -957,8 +862,7 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
                  client_id_str.c_str());
         }
 
-        // Client is now fully connected. Subscriptions are empty initially.
-        return;  // Finished processing ID for new client
+        return;
       }
     } else {
       // First message was not MSG_ID
@@ -970,28 +874,22 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
     }
   }
 
-  // --- Handle other message types from already connected clients ---
-
   // Create a local mutable copy for potential modification (e.g., null term)
-  char payload_buffer[MAX_MSG_SIZE + 1];  // Use appropriate max size
+  char payload_buffer[MAX_MSG_SIZE + 1];
   size_t copy_len = packet.len;
   if (copy_len > MAX_MSG_SIZE) {
-    copy_len = MAX_MSG_SIZE;  // Ensure we don't copy too much
+    copy_len = MAX_MSG_SIZE;
   }
-  // Ensure copy_len is not negative if packet.len was somehow 0
   if (copy_len == 0 && packet.len > 0) {
-    // This case might indicate an issue, but proceed with 0 copy_len
     cerr << "WARN: packet.len > 0 but copy_len became 0." << endl;
   } else if (copy_len > 0) {
     memcpy(payload_buffer, packet.payload.text, copy_len);
   }
-  // Ensure null termination for string operations. packet.len includes the null
-  // terminator. So, the actual string data is packet.len - 1 bytes.
   if (packet.len > 0 && packet.len <= MAX_MSG_SIZE) {
     payload_buffer[packet.len - 1] =
         '\0';  // Null terminate at the end of the string data
   } else {
-    payload_buffer[0] = '\0';  // Ensure empty string if length is 0 or invalid
+    payload_buffer[0] = '\0';
   }
 
   // Use payload_buffer for subsequent operations instead of packet.payload.text
@@ -1000,8 +898,6 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
   switch (packet.type) {
     case MSG_SUBSCRIBE:
     case MSG_UNSUBSCRIBE: {
-      // Payload should be "command topic_pattern"
-      // Example: "subscribe topicA" or "unsubscribe topicB"
       string full_command(payload_text);  // Use the local buffer
       size_t first_space_pos = full_command.find(' ');
 
@@ -1009,35 +905,30 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
         cerr << "Error: Malformed subscribe/unsubscribe command from "
              << client->id << ": '" << full_command << "'. No space found."
              << endl;
-        break;  // Ignore malformed command
+        break;
       }
 
       string command = full_command.substr(0, first_space_pos);
       string topic_pattern = full_command.substr(first_space_pos + 1);
 
-      // Basic validation for topic pattern (not empty)
       if (topic_pattern.empty()) {
         cerr << "Error: Subscribe/unsubscribe command from " << client->id
              << " has empty topic pattern." << endl;
         break;  // Skip invalid command
       }
-      // Further validation based on spec (no spaces in topic, valid wildcard
-      // usage?) The spec says topics are "şiruri de caractere ASCII fără
-      // spații". This implies the topic_pattern itself should not contain
-      // spaces after extraction.
       if (topic_pattern.find(' ') != string::npos) {
         cerr << "Error: Topic pattern contains spaces from client "
              << client->id << ": '" << topic_pattern << "'" << endl;
         break;  // Skip invalid command
       }
-      // The wildcard rules (+ and *) are handled by match_topic.
-      // We don't need to validate the structure of the pattern here, just its
-      // presence.
 
       if (packet.type == MSG_SUBSCRIBE) {
         subscribe_client_to_topic(client, topic_pattern);
-      } else {  // MSG_UNSUBSCRIBE
+      } else if (packet.type == MSG_UNSUBSCRIBE) {
         unsubscribe_client_from_topic(client, topic_pattern);
+      } else {
+        cerr << "Error: Unknown message type for subscribe/unsubscribe from "
+             << client->id << ": " << packet.type << endl;
       }
       break;
     }
@@ -1056,17 +947,16 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
       }
       break;
 
-    case MSG_ID:  // Should not happen after initial connection
+    case MSG_ID:
       cerr << "WARN: Received unexpected MSG_ID from already connected client "
            << client->id << ". Ignoring." << endl;
       break;
 
-    case MSG_ERROR:  // Client should not send errors
+    case MSG_ERROR:
       cerr << "WARN: Received MSG_ERROR from client " << client->id
            << ". Ignoring." << endl;
       break;
-    // Assuming MSG_UDP_FORWARD is defined in MessageType enum in common.h
-    case MSG_UDP_FORWARD:  // Client should not send forwarded messages
+    case MSG_UDP_FORWARD:
       cerr << "WARN: Received MSG_UDP_FORWARD from client " << client->id
            << ". Ignoring." << endl;
       break;
@@ -1077,11 +967,9 @@ void ClientConnections::process_tcp_command(shared_ptr<ClientState> client,
   }
 }
 
-// --- Subscription Management ---
-
 void ClientConnections::subscribe_client_to_topic(
     shared_ptr<ClientState> client, const string& topic_pattern) {
-  if (!client || client->id.empty()) {  // Need valid client and ID
+  if (!client || client->id.empty()) {
     cerr << "Error: Attempted to subscribe invalid client." << endl;
     return;
   }
@@ -1095,9 +983,6 @@ void ClientConnections::subscribe_client_to_topic(
 
   cerr << "Client " << client->id << " subscribed to pattern: " << topic_pattern
        << endl;
-  // Note: Client expects "Subscribed to topic X" - this needs to be sent back
-  // by server? The spec says client prints this *after sending* the command.
-  // Server doesn't need to confirm.
 }
 
 void ClientConnections::unsubscribe_client_from_topic(
@@ -1107,10 +992,8 @@ void ClientConnections::unsubscribe_client_from_topic(
     return;
   }
 
-  // Remove pattern from client's personal list
   client->subscriptions.erase(topic_pattern);
 
-  // Remove client ID from the global map for this topic pattern
   auto it_topic = topic_subscribers.find(topic_pattern);
   if (it_topic != topic_subscribers.end()) {
     it_topic->second.erase(client->id);
@@ -1125,54 +1008,31 @@ void ClientConnections::unsubscribe_client_from_topic(
 
   cerr << "Client " << client->id
        << " unsubscribed from pattern: " << topic_pattern << endl;
-  // Note: Client expects "Unsubscribed from topic X" - server doesn't need to
-  // confirm.
 }
 
-// Removed remove_client_subscriptions function as subscriptions persist.
-
-// --- Main Event Loop ---
-
 int ClientConnections::pollAll() {
-  // Timeout for poll can be -1 (infinite), 0 (non-blocking check), or positive
-  // ms
-  int poll_timeout_ms = 100;  // Check frequently (e.g., 100ms)
-
-  // cerr << "Polling " << num_fds << " fds..." << endl;
+  int poll_timeout_ms = 100;
   int rc = poll(poll_fds, num_fds, poll_timeout_ms);
-  // cerr << "Poll returned " << rc << endl;
 
   if (rc < 0) {
-    // EINTR might happen, should potentially restart poll
     if (errno == EINTR) {
       cerr << "poll interrupted, retrying..." << endl;
-      return 0;  // Indicate loop should continue
+      return 0;
     }
-    // Other errors are more serious
     perror("poll");
     return 1;  // Signal exit on critical poll error
   }
 
   if (rc == 0) {
-    // Timeout occurred (only if poll_timeout_ms > 0)
-    // cerr << "poll timed out" << endl;
-    return 0;  // Continue loop
+    // timeout, no events
+    return 0;
   }
 
-  // Iterate through descriptors that *might* have events
-  // Need to iterate carefully as handlers might modify poll_fds via remove_fd
-  // Iterate backwards or use index carefully
   for (int i = num_fds - 1; i >= 0; --i) {
-    // Check if fd at index i still exists (num_fds might have changed during
-    // loop)
     if (i >= num_fds) {
-      // cerr << "Skipping index " << i << " as num_fds is now " << num_fds <<
-      // endl;
       continue;
     }
 
-    // Make a copy of the pollfd struct at index i BEFORE potentially modifying
-    // the array
     struct pollfd current_pollfd = poll_fds[i];
     int current_fd = current_pollfd.fd;
 
@@ -1180,9 +1040,6 @@ int ClientConnections::pollAll() {
     // previous iteration)
     auto type_it = fd_to_type.find(current_fd);
     if (type_it == fd_to_type.end()) {
-      // This fd was likely removed in a previous step of this loop iteration.
-      // Skip. cerr << "Skipping fd " << current_fd << " at index " << i << " as
-      // it's no longer mapped." << endl;
       continue;
     }
     SocketType type = type_it->second;
@@ -1191,7 +1048,6 @@ int ClientConnections::pollAll() {
       continue;  // No events for this fd
     }
 
-    // --- Handle Errors First ---
     if (current_pollfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
       cerr << "Error/Hangup/Invalid event on fd " << current_fd
            << " (type: " << type << ", revents: " << current_pollfd.revents
@@ -1200,7 +1056,7 @@ int ClientConnections::pollAll() {
           type == STDIN_SOCKET) {
         fprintf(stderr,
                 "Critical error on listening socket or stdin. Exiting.\n");
-        onExit();  // Try to notify clients before exiting
+        onExit();  // Notify clients
         return 1;  // Signal exit
       } else if (type == TCP_CLIENT_SOCKET) {
         // Error on client socket, treat as disconnect
@@ -1210,22 +1066,13 @@ int ClientConnections::pollAll() {
         close(current_fd);
         remove_fd(current_fd);
       }
-      continue;  // Move to next fd index (remember we iterate backwards)
+      continue;
     }
 
-    // --- Handle Readable Events ---
     if (current_pollfd.revents & POLLIN) {
-      // cerr << "POLLIN on fd " << current_fd << " (type: " << type << ")" <<
-      // endl;
       if (type == TCP_LISTEN_SOCKET) {
-        // Handle new connection attempts (can accept multiple in a row if
-        // ready) Loop accept until EAGAIN if listening socket is non-blocking
-        // For simplicity, accept one per POLLIN event if blocking.
-        // If non-blocking, loop: while(connect_tcp_client());
-        connect_tcp_client();  // Accept one connection
+        connect_tcp_client();
       } else if (type == UDP_LISTEN_SOCKET) {
-        // Handle incoming UDP message (read one datagram)
-        // Loop recvfrom until EAGAIN for UDP
         while (true) {
           handle_udp_message(current_fd);
           // Check errno after handle_udp_message returns if it hit EAGAIN
@@ -1233,10 +1080,7 @@ int ClientConnections::pollAll() {
             errno = 0;  // Reset errno
             break;      // No more datagrams for now
           }
-          // If recvfrom had another error, handle_udp_message printed it.
-          // If recvfrom succeeded, loop again.
         }
-
       } else if (type == STDIN_SOCKET) {
         // Handle input from stdin
         if (handle_stdin()) {
@@ -1264,14 +1108,11 @@ int ClientConnections::pollAll() {
       }
     }
 
-    // --- Handle Writable Events ---
     // Must check AFTER potential disconnect in POLLIN handler
     // Check if fd still exists in map before proceeding
     if (fd_to_type.count(current_fd) &&
         fd_to_type[current_fd] == TCP_CLIENT_SOCKET &&
         (current_pollfd.revents & POLLOUT)) {
-      // cerr << "POLLOUT on fd " << current_fd << " (type: " << type << ")" <<
-      // endl;
       auto it = client_by_fd.find(current_fd);
       if (it != client_by_fd.end()) {
         handle_client_write(it->second);
@@ -1281,15 +1122,13 @@ int ClientConnections::pollAll() {
              << endl;
         // Find index and remove POLLOUT event bit - careful with iterating
         // backwards
-        int poll_idx_now =
-            find_poll_index(current_fd);  // Find current index again
-        if (poll_idx_now != -1 && poll_idx_now < num_fds) {  // Check bounds
+        int poll_idx_now = find_poll_index(current_fd);
+        if (poll_idx_now != -1 && poll_idx_now < num_fds) {
           poll_fds[poll_idx_now].events &= ~POLLOUT;
         }
       }
     }
+  }
 
-  }  // End for loop iterating through poll_fds
-
-  return 0;  // Signal loop should continue
+  return 0;
 }

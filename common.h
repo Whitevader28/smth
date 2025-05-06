@@ -33,12 +33,11 @@ enum MessageType {
 union MessagePayload {
   char text[MAX_MSG_SIZE + 1];
   char id[MAX_CLIENT_ID_SIZE];
-  // Add more fields as needed for other message types
 };
 
 class ChatPacket {
  public:
-  uint16_t len;  // Length of the payload
+  uint16_t len;
   MessageType type;
   MessagePayload payload;
 

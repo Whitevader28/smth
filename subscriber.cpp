@@ -145,26 +145,24 @@ void run_client(int socket_fd) {
 
       // Assuming MSG_UDP_FORWARD is the type for messages from UDP
       if (recv_packet.type == MSG_UDP_FORWARD) {
-        // Ensure null termination for safety before printing
         recv_packet.payload
             .text[recv_packet.len > 0 ? recv_packet.len - 1 : 0] = '\0';
-        // Print the formatted message received from the server
+        // Display the message received from the server
         printf("%s\n", recv_packet.payload.text);
       }
-      // Ignore other unexpected message types
+      // else shouldn't happen :))
     }
 
     // Check for events on stdin
     if (poll_fds[1].revents & POLLIN) {
-      // Received data from the keyboard (user input)
       rc = read(STDIN_FILENO, buf, MAX_MSG_SIZE);
       DIE(rc < 0, "read stdin");
 
-      if (rc == 0) {  // EOF on stdin (e.g., Ctrl+D)
+      if (rc == 0) {
         cerr << "EOF received on stdin. Sending exit command." << endl;
         ChatPacket exit_packet;
         memset(&exit_packet, 0, sizeof(exit_packet));
-        exit_packet.len = strlen("exit") + 1;  // Include null terminator
+        exit_packet.len = strlen("exit") + 1;
         exit_packet.type = MSG_EXIT;
         strncpy(exit_packet.payload.text, "exit", exit_packet.len);
         send_packet(socket_fd, exit_packet);
@@ -175,7 +173,7 @@ void run_client(int socket_fd) {
       if (rc > 0 && buf[rc - 1] == '\n') {
         buf[rc - 1] = '\0';
       } else {
-        buf[rc] = '\0';  // Null terminate if newline wasn't the last char
+        buf[rc] = '\0';
       }
 
       // Process user command
@@ -185,7 +183,7 @@ void run_client(int socket_fd) {
       if (input == "exit") {
         ChatPacket exit_packet;
         memset(&exit_packet, 0, sizeof(exit_packet));
-        exit_packet.len = strlen("exit") + 1;  // Include null terminator
+        exit_packet.len = strlen("exit") + 1;
         exit_packet.type = MSG_EXIT;
         strncpy(exit_packet.payload.text, "exit", exit_packet.len);
         send_packet(socket_fd, exit_packet);
@@ -202,56 +200,31 @@ void run_client(int socket_fd) {
           cerr << "Invalid topic format: '" << topic_pattern << "'" << endl;
           continue;  // Skip invalid command
         }
-        // Further validation based on spec (e.g., leading/trailing slashes for
-        // wildcards?) The spec mentions "şiruri de caractere ASCII fără spații"
-        // for topics used in the application. Wildcards + and * are allowed,
-        // separated by /. The split function in server_tcp_com.cpp handles
-        // consecutive slashes by ignoring empty tokens. Let's assume the server
-        // handles the full validation of the topic pattern including wildcard
-        // rules. For the client, we just need to send the command and the
-        // pattern.
 
         ChatPacket command_packet;
         memset(&command_packet, 0, sizeof(command_packet));
 
         if (command == "subscribe") {
           command_packet.type = MSG_SUBSCRIBE;
-          // Send the whole command string "subscribe topic_pattern" as payload
-          // The server will parse this.
-          strncpy(command_packet.payload.text, buf,
-                  MAX_MSG_SIZE);  // Use the original buf with command and topic
-          command_packet.payload.text[MAX_MSG_SIZE] =
-              '\0';  // Ensure null termination
-          command_packet.len = strlen(command_packet.payload.text) +
-                               1;  // Include null terminator
+          strncpy(command_packet.payload.text, buf, MAX_MSG_SIZE);
+          command_packet.payload.text[MAX_MSG_SIZE] = '\0';
+          command_packet.len = strlen(command_packet.payload.text) + 1;
 
           printf("Subscribed to topic %s\n", topic_pattern.c_str());
           send_packet(socket_fd, command_packet);
-
         } else if (command == "unsubscribe") {
           command_packet.type = MSG_UNSUBSCRIBE;
-          // Send the whole command string "unsubscribe topic_pattern" as
-          // payload
-          strncpy(command_packet.payload.text, buf,
-                  MAX_MSG_SIZE);  // Use the original buf
-          command_packet.payload.text[MAX_MSG_SIZE] =
-              '\0';  // Ensure null termination
-          command_packet.len = strlen(command_packet.payload.text) +
-                               1;  // Include null terminator
+          strncpy(command_packet.payload.text, buf, MAX_MSG_SIZE);
+          command_packet.payload.text[MAX_MSG_SIZE] = '\0';
+          command_packet.len = strlen(command_packet.payload.text) + 1;
 
           printf("Unsubscribed from topic %s\n", topic_pattern.c_str());
           send_packet(socket_fd, command_packet);
-
         } else {
-          // Unknown command
           cerr << "Unknown command: " << command << endl;
-          // Do not send anything to the server for unknown commands
         }
       } else {
-        // Input without space (not 'exit', 'subscribe', or 'unsubscribe' with
-        // topic)
         cerr << "Invalid command format." << endl;
-        // Do not send anything to the server
       }
     }
   }
@@ -260,10 +233,7 @@ void run_client(int socket_fd) {
 int main(int argc, char* argv[]) {
   int rc = 0;
 
-  // Disable buffering for stdout
   setvbuf(stdout, NULL, _IONBF, BUFSIZ);
-  // Disable buffering for stderr as well (good practice)
-  setvbuf(stderr, NULL, _IONBF, BUFSIZ);
 
   if (argc != 4) {
     printf("\n Usage: %s <ID_CLIENT> <IP_SERVER> <PORT_SERVER>\n", argv[0]);
@@ -274,17 +244,14 @@ int main(int argc, char* argv[]) {
   rc = sscanf(argv[3], "%hu", &port);
   DIE(rc != 1, "Given port is invalid");
 
-  char id[MAX_CLIENT_ID_SIZE + 1];  // +1 for null terminator safety
+  char id[MAX_CLIENT_ID_SIZE + 1];
   memset(id, 0, sizeof(id));
-  // Use strncpy to prevent buffer overflow if argv[1] is too long
   strncpy(id, argv[1], MAX_CLIENT_ID_SIZE);
-  id[MAX_CLIENT_ID_SIZE] = '\0';  // Ensure null termination
+  id[MAX_CLIENT_ID_SIZE] = '\0';
 
-  // Create a TCP socket for connection with the server
   const int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   DIE(socket_fd < 0, "socket");
 
-  // Complete the server address structure
   struct sockaddr_in serv_addr;
   socklen_t socket_len = sizeof(struct sockaddr_in);
 
@@ -292,14 +259,13 @@ int main(int argc, char* argv[]) {
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_port = htons(port);
   rc = inet_pton(AF_INET, argv[2], &serv_addr.sin_addr.s_addr);
-  DIE(rc <= 0, "inet_pton");  // Handles invalid IP address format
+  DIE(rc <= 0, "inet_pton");
 
   // Connect to the server
   rc = connect(socket_fd, (const sockaddr*)&serv_addr, sizeof(serv_addr));
-  // Check specific connection errors
+
   if (rc < 0) {
     perror("connect");
-    // Provide more specific error messages for common connection issues
     if (errno == ECONNREFUSED) {
       cerr << "Connection refused. Is the server running and accessible at "
            << argv[2] << ":" << port << "?" << endl;
@@ -308,19 +274,16 @@ int main(int argc, char* argv[]) {
     } else if (errno == ETIMEDOUT) {
       cerr << "Connection attempt timed out." << endl;
     }
-    exit(EXIT_FAILURE);  // Exit on connection failure
+    exit(EXIT_FAILURE);
   }
 
   // Send the client ID to the server immediately after connecting
   ChatPacket packet;
   memset(&packet, 0, sizeof(packet));
   packet.type = MSG_ID;
-  // Use the validated and null-terminated id buffer
   strncpy(packet.payload.id, id, MAX_CLIENT_ID_SIZE);
-  packet.payload.id[MAX_CLIENT_ID_SIZE] =
-      '\0';  // Double-ensure null termination in payload
-  packet.len =
-      strlen(packet.payload.id) + 1;  // Include null terminator in length
+  packet.payload.id[MAX_CLIENT_ID_SIZE] = '\0';
+  packet.len = strlen(packet.payload.id) + 1;
 
   int bytes_sent = send_packet(socket_fd, packet);
   if (bytes_sent < 0) {
@@ -330,14 +293,10 @@ int main(int argc, char* argv[]) {
   }
   if (bytes_sent != (int)(sizeof(uint16_t) + sizeof(uint32_t) + packet.len)) {
     cerr << "Warning: Sent partial ID packet." << endl;
-    // Depending on severity, might close connection here
   }
 
-  // Run the main client loop
   run_client(socket_fd);
 
-  // Close the socket when the client loop finishes
   close(socket_fd);
-
   return 0;
 }
